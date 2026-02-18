@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Telemetry</title>
+</head>
+<body>
+<h1>Metrics</h1>
+<table border="1">
+{{range .}}
+<tr>
+    <td>{{.ID}}</td>
+    <td>{{.MType}}</td>
+        {{if .Value}}
+        <td>{{.Value}}</td>
+        {{end}}
+        {{if .Delta}}
+        <td>{{.Delta}}</td>
+        {{end}}
+</tr>
+{{end}}
+</table>
+</body>
+</html>
