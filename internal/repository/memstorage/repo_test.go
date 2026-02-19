@@ -1,6 +1,7 @@
-package repository
+package memstorage
 
 import (
+	"context"
 	"testing"
 
 	"github.com/lbrezgin/telemetry/internal/model"
@@ -14,34 +15,34 @@ func Test_memStorage_Find(t *testing.T) {
 		name       string
 		id         string
 		metricType string
-		want       model.Metrics
+		want       *model.Metrics
 		wantErr    bool
 	}{
 		{
 			name:       "returns existing metric",
 			id:         "Alloc",
 			metricType: model.Gauge,
-			want:       *testutil.GaugeMetric("Alloc", 313.23),
+			want:       testutil.GaugeMetric("Alloc", 313.23),
 			wantErr:    false,
 		},
 		{
-			name:       "returns empty struct and error if metric doesn't exist",
+			name:       "returns nil and error if metric doesn't exist",
 			id:         "BuckHashSys",
 			metricType: model.Counter,
-			want:       model.Metrics{},
+			want:       nil,
 			wantErr:    true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			repo := &memStorage{
+			repo := &MemStorage{
 				db: dbMemStorage{},
 			}
 			alloc := testutil.GaugeMetric("Alloc", 313.23)
 			repo.db = append(repo.db, alloc)
 
-			got, gotErr := repo.Find(tt.id, tt.metricType)
+			got, gotErr := repo.Find(context.Background(), tt.id, tt.metricType)
 			if gotErr != nil {
 				if !tt.wantErr {
 					t.Errorf("Find(): error wasn't expected in this case but got: %v", gotErr)
@@ -63,14 +64,14 @@ func Test_memStorage_Find(t *testing.T) {
 // of the Metrics struct and that Metrics.Delta/Metrics.Value do not share pointers
 // with internal storage. This protects the internal state from mutation.
 func Test_memStorage_Find_returnsCopy(t *testing.T) {
-	repo := &memStorage{
+	repo := &MemStorage{
 		db: dbMemStorage{},
 	}
 
 	alloc := testutil.GaugeMetric("Alloc", 313.23)
 	repo.db = append(repo.db, alloc)
 
-	got, gotErr := repo.Find(alloc.ID, alloc.MType)
+	got, gotErr := repo.Find(context.Background(), alloc.ID, alloc.MType)
 	require.Nilf(t, gotErr, "Find(): error wasn't expected in this case but got %v", gotErr)
 	require.Equalf(t, *alloc.Value, *got.Value, "precondition: values must be equal before mutation")
 
@@ -81,13 +82,13 @@ func Test_memStorage_Find_returnsCopy(t *testing.T) {
 	`)
 }
 
-func Test_memStorage_Save(t *testing.T) {
+func Test_memStorage_Upsert(t *testing.T) {
 	t.Run("successfully saves new metric in the storage", func(t *testing.T) {
-		repo := &memStorage{
+		repo := &MemStorage{
 			db: dbMemStorage{},
 		}
 		pollCount := testutil.CounterMetric("PollCount", 1)
-		repo.Save(pollCount)
+		repo.Upsert(context.Background(), pollCount)
 
 		for _, m := range repo.db {
 			if m.ID == pollCount.ID && *m.Delta == *pollCount.Delta {
@@ -98,15 +99,15 @@ func Test_memStorage_Save(t *testing.T) {
 	})
 
 	t.Run("if metric with the same ID and Delta/Value exists, it is replaced", func(t *testing.T) {
-		repo := &memStorage{
+		repo := &MemStorage{
 			db: dbMemStorage{},
 		}
 
 		nextGC := testutil.GaugeMetric("NextGC", 5.432)
-		repo.Save(nextGC)
+		repo.Upsert(context.Background(), nextGC)
 
 		nextGC2 := testutil.GaugeMetric("NextGC", 5424.123213)
-		repo.Save(nextGC2)
+		repo.Upsert(context.Background(), nextGC2)
 
 		for _, m := range repo.db {
 			if m.ID == nextGC.ID {
@@ -120,8 +121,8 @@ func Test_memStorage_Save(t *testing.T) {
 }
 
 func Test_memStorage_List(t *testing.T) {
-	newTestRepo := func() *memStorage {
-		repo := &memStorage{db: dbMemStorage{}}
+	newTestRepo := func() *MemStorage {
+		repo := &MemStorage{db: dbMemStorage{}}
 		repo.db = append(repo.db, testutil.GaugeMetric("GM1", 1.1))
 		repo.db = append(repo.db, testutil.GaugeMetric("GM2", 2.1))
 		repo.db = append(repo.db, testutil.GaugeMetric("GM3", 3.1))
@@ -149,7 +150,7 @@ func Test_memStorage_List(t *testing.T) {
 	t.Run("returns all metrics from the repository", func(t *testing.T) {
 		repo := newTestRepo()
 		want := newWant()
-		got := repo.List()
+		got, _ := repo.List(context.Background())
 
 		assert.Equalf(t, want, got, "List(): expected %v, got %v", want, got)
 	})
@@ -157,7 +158,7 @@ func Test_memStorage_List(t *testing.T) {
 	t.Run("returned metrics should be copies", func(t *testing.T) {
 		repo := newTestRepo()
 		want := newWant()
-		got := repo.List()
+		got, _ := repo.List(context.Background())
 
 		for i := range got {
 			assert.NotSamef(t, &got[i], &want[i], "List(): expected copy but got the original")

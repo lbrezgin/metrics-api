@@ -13,7 +13,6 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -31,32 +30,28 @@ const (
 
 	contentTypeJSON = "application/json"
 	gzipFormat      = "gzip"
+
+	batchSize = 50
 )
 
-var (
-	errUnknownMetricType = errors.New("unknown metric type")
-)
-
-// collector defines the contract for a metrics source used by the agent.
-// The implementation is responsible for gathering system/runtime statistics
-// and returning them as a StatsStorage map.
 type collector interface {
 	CollectMetrics() stats.StatsStorage
 }
 
-// agent periodically collects metrics using a collector and sends them
-// to the telemetry server using the configured HTTP client.
 type agent struct {
 	stats  collector
 	client *resty.Client
-	cfg    *config.AgentConfig
+	cfg    *config.Agent
 }
 
-// Start starts the agent loop. It listens on the stop channel and
-// terminates once a value is received.
-//
-// Metrics are collected according to pollInterval and reported based on
-// reportInterval. Report and poll intervals set in AgentConfig.
+func NewAgent(col collector, clt *resty.Client, cfg *config.Agent) *agent {
+	return &agent{
+		stats:  col,
+		client: clt,
+		cfg:    cfg,
+	}
+}
+
 func (a *agent) Start(stop <-chan struct{}) error {
 	pollTicker := time.NewTicker(intToSec(a.cfg.PollInterval))
 	defer pollTicker.Stop()
@@ -91,61 +86,68 @@ func (a *agent) Start(stop <-chan struct{}) error {
 	}
 }
 
-// sendMetrics iterates through the collected metrics and sends each metric
-// to the server using an HTTP POST request. The endpoint URL is constructed
-// according to the metric type.
 func (a *agent) sendMetrics(metrics stats.StatsStorage) error {
 	if metrics == nil {
 		return fmt.Errorf("metrics weren't collected, nothing to send")
 	}
 
+	reqURL := fmt.Sprintf("http://%s/updates", a.cfg.Addr)
+	metricsToSend := make([]*model.Metrics, 0, batchSize)
+
 	for metricID, metricData := range metrics {
-		reqURL := fmt.Sprintf("http://%s/update", a.cfg.Addr)
-
-		if metricData.Type != model.Gauge && metricData.Type != model.Counter {
-			return errUnknownMetricType
+		m := toMetric(metricID, metricData)
+		if err := m.Validate(); err != nil {
+			log.Printf("skip invalid metric: %v", err)
+			continue
 		}
 
-		metricBytes, err := json.Marshal(toMetric(metricID, metricData))
-		if err != nil {
-			return fmt.Errorf("encoding request body: %w", err)
+		metricsToSend = append(metricsToSend, m)
+		if len(metricsToSend) == batchSize {
+			if err := a.sentReqInGzip(metricsToSend, reqURL); err != nil {
+				return err
+			}
+			metricsToSend = metricsToSend[:0]
 		}
+	}
 
-		var b bytes.Buffer
-		writer := gzip.NewWriter(&b)
-		if _, err = writer.Write(metricBytes); err != nil {
-			return fmt.Errorf("compressing request body: %w", err)
-		}
-		if err = writer.Close(); err != nil {
-			return fmt.Errorf("closing gzip writer: %w", err)
-		}
-
-		resp, err := a.client.R().
-			SetHeader(contentType, contentTypeJSON).
-			SetHeader(contentEnc, gzipFormat).
-			SetBody(b.Bytes()).
-			Post(reqURL)
-
-		if err != nil {
-			return fmt.Errorf("failed to send request: %w", err)
-		}
-
-		if resp.StatusCode() != http.StatusOK {
-			return fmt.Errorf("status code: %d", resp.StatusCode())
+	if len(metricsToSend) > 0 {
+		if err := a.sentReqInGzip(metricsToSend, reqURL); err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
-// NewAgent constructs a new agent instance configured with a metrics
-// collector and AgentConfig that contains polling and reporting intervals,
-// server address (to where metrics are sent).
-func NewAgent(col collector, clt *resty.Client, cfg *config.AgentConfig) *agent {
-	return &agent{
-		stats:  col,
-		client: clt,
-		cfg:    cfg,
+func (a *agent) sentReqInGzip(metrics []*model.Metrics, reqURL string) error {
+	metricsBytes, err := json.Marshal(metrics)
+	if err != nil {
+		return fmt.Errorf("failed to encode metrics: %w", err)
 	}
+
+	var b bytes.Buffer
+	zw := gzip.NewWriter(&b)
+
+	if _, err = zw.Write(metricsBytes); err != nil {
+		return fmt.Errorf("failed to compress metrics: %w", err)
+	}
+	if err = zw.Close(); err != nil {
+		return fmt.Errorf("failed to close gzip writer: %w", err)
+	}
+
+	resp, err := a.client.R().
+		SetHeader(contentType, contentTypeJSON).
+		SetHeader(contentEnc, gzipFormat).
+		SetBody(b.Bytes()).
+		Post(reqURL)
+
+	if err != nil {
+		return fmt.Errorf("failed to send request: %w", err)
+	}
+
+	if resp.StatusCode() != http.StatusOK {
+		return fmt.Errorf("status code: %d", resp.StatusCode())
+	}
+	return nil
 }
 
 func intToSec(i int) time.Duration {

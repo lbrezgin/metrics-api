@@ -1,16 +1,14 @@
-// Package handler contains HTTP handlers that expose the metrics service
-// over HTTP. The handlers are responsible for translating incoming HTTP
-// requests into service calls and serializing the service responses back
-// to HTTP clients.
 package handler
 
 import (
+	"context"
 	"errors"
 	"log"
 	"log/slog"
 	"net/http"
 	"strconv"
 	"text/template"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/lbrezgin/telemetry/internal/model"
@@ -24,30 +22,59 @@ const (
 	contentTypeJSON = "application/json"
 )
 
-// svc defines the business operations required by the HTTP layer.
-// It is satisfied by the metrics service implementation and allows the
-// handler package to remain independent from the service internals.
 type svc interface {
-	Set(id, metricType string, val float64)
-	Increment(id, metricType string, delta int64)
-	List() []model.Metrics
-	GetVal(id, metricType string) (string, error)
-	GetGaugeValue(id string) (float64, error)
-	GetCounterDelta(id string) (int64, error)
+	Set(ctx context.Context, id, metricType string, val float64) error
+	Increment(ctx context.Context, id, metricType string, delta int64) error
+	List(ctx context.Context) ([]model.Metrics, error)
+	GetVal(ctx context.Context, id, metricType string) (string, error)
+	GetGaugeValue(ctx context.Context, id string) (float64, error)
+	GetCounterDelta(ctx context.Context, id string) (int64, error)
+	PingContext(ctx context.Context) error
+	UpsertMetrics(ctx context.Context, metrics []model.Metrics) error
 }
 
-// metricsHandler implements HTTP handlers for metrics operations.
-// It delegates the actual business logic to the injected service.
+func NewMetricsHandler(svc svc) *metricsHandler {
+	return &metricsHandler{
+		svc: svc,
+	}
+}
+
 type metricsHandler struct {
 	svc svc
 }
 
-// Update handles HTTP requests for updating a single metric.
-// Depending on the metric type, it either sets a gauge value or
-// increments a counter. Supported metric types are defined in the
-// model package. The metric data is taken from the URL path.
-//
-// On success, Update responds with HTTP 200 OK.
+func (h *metricsHandler) Ping(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 1*time.Second)
+	defer cancel()
+
+	if err := h.svc.PingContext(ctx); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		slog.Debug(err.Error())
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
+func (h *metricsHandler) Updates(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+
+	if writeContentTypeError(w, r.Header.Get(contentType), contentTypeJSON) {
+		return
+	}
+
+	var metrics []model.Metrics
+	if !tryDecodeJSONRequest(w, r, &metrics) {
+		return
+	}
+
+	if err := h.svc.UpsertMetrics(r.Context(), metrics); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
 func (h *metricsHandler) Update(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 
@@ -62,18 +89,23 @@ func (h *metricsHandler) Update(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "bad value given", http.StatusBadRequest)
 			return
 		}
-
-		h.svc.Set(metricName, model.Gauge, val)
+		if err = h.svc.Set(r.Context(), metricName, model.Gauge, val); err != nil {
+			slog.Error(err.Error())
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
 	case model.Counter:
 		val, err := strconv.Atoi(metricValue)
 		if err != nil {
 			http.Error(w, "bad value given", http.StatusBadRequest)
 			return
 		}
-
 		nVal := int64(val)
-		h.svc.Increment(metricName, model.Counter, nVal)
-
+		if err = h.svc.Increment(r.Context(), metricName, model.Counter, nVal); err != nil {
+			slog.Error(err.Error())
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
 	default:
 		http.Error(w, service.ErrUnknownMetricType.Error(), http.StatusBadRequest)
 		return
@@ -82,12 +114,14 @@ func (h *metricsHandler) Update(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *metricsHandler) UpdateFromBody(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+
 	if writeContentTypeError(w, r.Header.Get(contentType), contentTypeJSON) {
 		return
 	}
 
 	var metric model.Metrics
-	if !successfulDecoding(w, r, &metric) {
+	if !tryDecodeJSONRequest(w, r, &metric) {
 		return
 	}
 
@@ -102,13 +136,21 @@ func (h *metricsHandler) UpdateFromBody(w http.ResponseWriter, r *http.Request) 
 			writeJSONError(w, http.StatusBadRequest, "incorrect data")
 			return
 		}
-		h.svc.Set(metric.ID, metric.MType, *metric.Value)
+		if err := h.svc.Set(r.Context(), metric.ID, metric.MType, *metric.Value); err != nil {
+			slog.Error(err.Error())
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
 	case model.Counter:
 		if metric.Delta == nil {
 			writeJSONError(w, http.StatusBadRequest, "incorrect data")
 			return
 		}
-		h.svc.Increment(metric.ID, metric.MType, *metric.Delta)
+		if err := h.svc.Increment(r.Context(), metric.ID, metric.MType, *metric.Delta); err != nil {
+			slog.Error(err.Error())
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
 	default:
 		slog.Info("unknown metric type", "metric_type", metric.MType)
 		writeJSONError(w, http.StatusBadRequest, service.ErrUnknownMetricType.Error())
@@ -118,6 +160,7 @@ func (h *metricsHandler) UpdateFromBody(w http.ResponseWriter, r *http.Request) 
 }
 
 func (h *metricsHandler) ShowFromBody(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
 	w.Header().Set(contentType, contentTypeJSON)
 
 	if writeContentTypeError(w, r.Header.Get(contentType), contentTypeJSON) {
@@ -125,13 +168,13 @@ func (h *metricsHandler) ShowFromBody(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var metric model.Metrics
-	if !successfulDecoding(w, r, &metric) {
+	if !tryDecodeJSONRequest(w, r, &metric) {
 		return
 	}
 
 	switch metric.MType {
 	case model.Gauge:
-		val, err := h.svc.GetGaugeValue(metric.ID)
+		val, err := h.svc.GetGaugeValue(r.Context(), metric.ID)
 		if err != nil {
 			if errors.Is(err, repository.ErrMetricNotFound) {
 				writeJSONError(w, http.StatusNotFound, err.Error())
@@ -142,7 +185,7 @@ func (h *metricsHandler) ShowFromBody(w http.ResponseWriter, r *http.Request) {
 		}
 		metric.Value = &val
 	case model.Counter:
-		delta, err := h.svc.GetCounterDelta(metric.ID)
+		delta, err := h.svc.GetCounterDelta(r.Context(), metric.ID)
 		if err != nil {
 			if errors.Is(err, repository.ErrMetricNotFound) {
 				writeJSONError(w, http.StatusNotFound, err.Error())
@@ -158,31 +201,34 @@ func (h *metricsHandler) ShowFromBody(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusOK)
-	// successfulEncoding writes http.Error in ResponseWriter if any error
+	// tryEncodeJSONRequest writes http.Error in ResponseWriter if any error
 	// occurs during encoding.
-	_ = successfulEncoding(w, metric)
+	_ = tryEncodeJSONRequest(w, metric)
 }
 
-// List returns all stored metrics in a HTML format.
-// It always responds with HTTP 200 OK.
 func (h *metricsHandler) List(w http.ResponseWriter, r *http.Request) {
 	tmpl, err := template.ParseFiles("internal/static/index.html")
 	if err != nil {
-		http.Error(w, "template not found: "+err.Error(), http.StatusInternalServerError)
+		slog.Error("failed to parse template", "err", err, "handler", "List")
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
-	metrics := h.svc.List()
+	metrics, err := h.svc.List(r.Context())
+	if err != nil {
+		slog.Error("failed to get metrics", "err", err, "handler", "List")
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := tmpl.Execute(w, metrics); err != nil {
-		http.Error(w, "execute error: "+err.Error(), http.StatusInternalServerError)
+	if err = tmpl.Execute(w, metrics); err != nil {
+		slog.Error("failed to execute template", "err", err, "handler", "List")
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 }
 
-// Show returns accumulated metric's value in a text format with
-// HTTP 200 OK.
 func (h *metricsHandler) Show(w http.ResponseWriter, r *http.Request) {
 	metricType := chi.URLParam(r, "type")
 	metricName := chi.URLParam(r, "name")
@@ -192,7 +238,7 @@ func (h *metricsHandler) Show(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	val, err := h.svc.GetVal(metricName, metricType)
+	val, err := h.svc.GetVal(r.Context(), metricName, metricType)
 	if err != nil {
 		if errors.Is(err, repository.ErrMetricNotFound) {
 			http.Error(w, repository.ErrMetricNotFound.Error(), http.StatusNotFound)
@@ -207,12 +253,4 @@ func (h *metricsHandler) Show(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(val))
-}
-
-// NewMetricsHandler constructs a metricsHandler instance bound to the
-// provided service implementation.
-func NewMetricsHandler(svc svc) *metricsHandler {
-	return &metricsHandler{
-		svc: svc,
-	}
 }

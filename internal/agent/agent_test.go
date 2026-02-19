@@ -19,11 +19,11 @@ func Test_agent_sendMetrics(t *testing.T) {
 		wantErr bool
 	}{
 		{
-			name: "returns error if metric has unsupported type",
+			name: "skip metric if it has unsupported type and doesn't return error",
 			metrics: stats.StatsStorage{
 				"Alloc": stats.Stat{Type: "random type", IntVal: 12},
 			},
-			wantErr: true,
+			wantErr: false,
 		},
 		{
 			name: "doesn't return error if all arguments are correct (gauge)",
@@ -46,7 +46,7 @@ func Test_agent_sendMetrics(t *testing.T) {
 			a := &agent{
 				stats:  stats.NewRuntimeStats(),
 				client: resty.New(),
-				cfg: &config.AgentConfig{
+				cfg: &config.Agent{
 					PollInterval:   2,
 					ReportInterval: 10,
 				},

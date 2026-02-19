@@ -10,11 +10,11 @@ import (
 )
 
 var (
-	errUnsupportedContentType = errors.New("unsupported ContentType")
+	errUnsupportedContentType = errors.New("unsupported Content-Type")
 )
 
-func writeContentTypeError(w http.ResponseWriter, ct, ctJSON string) bool {
-	if err := validateContentType(ct, ctJSON); err != nil {
+func writeContentTypeError(w http.ResponseWriter, ct, expCT string) bool {
+	if err := validateCT(ct, expCT); err != nil {
 		if errors.Is(err, errUnsupportedContentType) {
 			slog.Info(
 				"unsupported Content-Type",
@@ -30,7 +30,7 @@ func writeContentTypeError(w http.ResponseWriter, ct, ctJSON string) bool {
 	return false
 }
 
-func successfulDecoding(w http.ResponseWriter, r *http.Request, a any) bool {
+func tryDecodeJSONRequest(w http.ResponseWriter, r *http.Request, a any) bool {
 	if err := decodeJSON(r.Body, a); err != nil {
 		slog.Info("failed to decode data", "error", err)
 		writeJSONError(w, http.StatusBadRequest, "invalid JSON")
@@ -39,7 +39,7 @@ func successfulDecoding(w http.ResponseWriter, r *http.Request, a any) bool {
 	return true
 }
 
-func successfulEncoding(w http.ResponseWriter, a any) bool {
+func tryEncodeJSONRequest(w http.ResponseWriter, a any) bool {
 	if err := encodeJSON(w, a); err != nil {
 		slog.Info("failed to encode data", "error", err)
 		writeJSONError(w, http.StatusInternalServerError, "internal server error")
@@ -64,13 +64,12 @@ func encodeJSON(w http.ResponseWriter, a any) error {
 func decodeJSON(b io.Reader, a any) error {
 	dec := json.NewDecoder(b)
 	dec.DisallowUnknownFields()
-
 	return dec.Decode(a)
 }
 
-func validateContentType(contType, expContType string) error {
-	mediaType, _, err := mime.ParseMediaType(contType)
-	if err != nil || mediaType != expContType {
+func validateCT(ct, expCT string) error {
+	mediaType, _, err := mime.ParseMediaType(ct)
+	if err != nil || mediaType != expCT {
 		return errUnsupportedContentType
 	}
 	return nil

@@ -1,13 +1,7 @@
-// Package service contains the business logic for working with metrics.
-//
-// The service layer orchestrates operations on metrics independently from the
-// underlying storage implementation. It exposes high-level operations such as
-// setting gauge values, incrementing counter metrics and retrieving the list
-// of stored metrics. The actual persistence details are hidden behind the
-// repository interface.
 package service
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strconv"
@@ -22,23 +16,34 @@ var (
 	ErrUnknownMetricType  = errors.New("unknown metric type")
 )
 
-// storage defines operations required by the metrics service.
-// It allows the service to remain independent from the actual storage backend.
-type storage interface {
-	Find(string, string) (model.Metrics, error)
-	Save(*model.Metrics)
-	List() []model.Metrics
+type Storage interface {
+	Find(ctx context.Context, id, mtype string) (*model.Metrics, error)
+	Upsert(ctx context.Context, metric *model.Metrics) error
+	List(ctx context.Context) ([]model.Metrics, error)
+	Ping(ctx context.Context) error
+	UpsertTx(ctx context.Context, metric []model.Metrics) error
 }
 
-// metricsService implements business logic for working with metrics on
-// top of a storage. It can set and increment metrics. If metric that
-// should be updated doesn't exist, it will create new metric.
 type metricsService struct {
-	repo storage
+	repo Storage
 }
 
-func (s *metricsService) GetGaugeValue(id string) (float64, error) {
-	metric, err := s.repo.Find(id, model.Gauge)
+func (s *metricsService) UpsertMetrics(ctx context.Context, metrics []model.Metrics) error {
+	if err := s.repo.UpsertTx(ctx, metrics); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *metricsService) PingContext(ctx context.Context) error {
+	if err := s.repo.Ping(ctx); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *metricsService) GetGaugeValue(ctx context.Context, id string) (float64, error) {
+	metric, err := s.repo.Find(ctx, id, model.Gauge)
 	if err != nil {
 		return 0, err
 	}
@@ -48,8 +53,8 @@ func (s *metricsService) GetGaugeValue(id string) (float64, error) {
 	return *metric.Value, nil
 }
 
-func (s *metricsService) GetCounterDelta(id string) (int64, error) {
-	metric, err := s.repo.Find(id, model.Counter)
+func (s *metricsService) GetCounterDelta(ctx context.Context, id string) (int64, error) {
+	metric, err := s.repo.Find(ctx, id, model.Counter)
 	if err != nil {
 		return 0, err
 	}
@@ -61,41 +66,45 @@ func (s *metricsService) GetCounterDelta(id string) (int64, error) {
 
 // Set assigns a new value to a gauge metric.
 // If the metric does not exist yet, it is created automatically.
-func (s *metricsService) Set(id, metricType string, val float64) {
-	metric, err := s.repo.Find(id, metricType)
-	if err != nil {
-		metric.ID = id
-		metric.MType = metricType
-		metric.Value = &val
-		s.repo.Save(&metric)
-		return
+func (s *metricsService) Set(ctx context.Context, id, metricType string, val float64) error {
+	metric := &model.Metrics{
+		ID:    id,
+		MType: metricType,
+		Value: &val,
 	}
-	metric.Value = &val
-	s.repo.Save(&metric)
-	*metric.Value = 123
+	if err := s.repo.Upsert(ctx, metric); err != nil {
+		return err
+	}
+	return nil
 }
 
 // Increment increases the value of a counter metric by the given delta.
 // If the metric does not exist yet, it is created automatically with
 // the initial value equal to delta.
-func (s *metricsService) Increment(id, metricType string, delta int64) {
-	metric, err := s.repo.Find(id, metricType)
+func (s *metricsService) Increment(ctx context.Context, id, metricType string, delta int64) error {
+	metric, err := s.repo.Find(ctx, id, metricType)
 	if err != nil {
-		metric.ID = id
-		metric.MType = metricType
-		metric.Delta = &delta
-		s.repo.Save(&metric)
-		return
+		if errors.Is(err, repository.ErrMetricNotFound) {
+			metric = &model.Metrics{}
+			metric.ID = id
+			metric.MType = metricType
+			metric.Delta = &delta
+		} else {
+			return err
+		}
+	} else {
+		*metric.Delta += delta
 	}
-	*metric.Delta += delta
-	s.repo.Save(&metric)
-
+	if err = s.repo.Upsert(ctx, metric); err != nil {
+		return err
+	}
+	return nil
 }
 
 // GetVal finds metric with given id and type and returns
 // its value in a string format.
-func (s *metricsService) GetVal(id, metricType string) (string, error) {
-	metric, err := s.repo.Find(id, metricType)
+func (s *metricsService) GetVal(ctx context.Context, id, metricType string) (string, error) {
+	metric, err := s.repo.Find(ctx, id, metricType)
 	if err != nil {
 		if errors.Is(err, repository.ErrMetricNotFound) {
 			return "", repository.ErrMetricNotFound
@@ -119,14 +128,15 @@ func (s *metricsService) GetVal(id, metricType string) (string, error) {
 }
 
 // List returns all stored metrics as value copies.
-// The returned slice must not be used to mutate the repository state.
-func (s *metricsService) List() []model.Metrics {
-	return s.repo.List()
+func (s *metricsService) List(ctx context.Context) ([]model.Metrics, error) {
+	result, err := s.repo.List(ctx)
+	if err != nil {
+		return []model.Metrics{}, fmt.Errorf("list service: %w", err)
+	}
+	return result, nil
 }
 
-// NewMetricsService constructs a service instance on top of the provided
-// storage implementation.
-func NewMetricsService(repo storage) *metricsService {
+func NewMetricsService(repo Storage) *metricsService {
 	return &metricsService{
 		repo: repo,
 	}

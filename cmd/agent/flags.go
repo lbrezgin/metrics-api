@@ -24,7 +24,7 @@ const (
 
 // parseFlags parses all flags and sets the corresponding config fields
 // only if they currently hold zero values.
-func parseFlags(cfg *config.AgentConfig) error {
+func parseFlags(cfg *config.Agent) error {
 	flag.StringVar(&flagServerAddr, "a", defaultServerAddr, "server address (host:port)")
 
 	flag.IntVar(&flagReportInterval, "r", defaultReportInterval, "metrics report interval")

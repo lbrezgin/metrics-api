@@ -1,8 +1,10 @@
 package persister
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -14,18 +16,18 @@ import (
 )
 
 var (
-	ErrCantBeNill       = errors.New("can't be nill")
+	ErrCantBeNil        = errors.New("can't be nill")
 	ErrFileDoesNotExist = errors.New("file doesn't exist")
 )
 
-type stateStore interface {
-	List() []model.Metrics
-	Restore(m []model.Metrics)
+type StateStore interface {
+	List(ctx context.Context) ([]model.Metrics, error)
+	Restore(ctx context.Context, metrics []model.Metrics) error
 }
 
 type persister struct {
-	cfg   *config.PersisterConfig
-	store stateStore
+	cfg   *config.Persister
+	store StateStore
 }
 
 func (p *persister) Run(stop <-chan struct{}, errCh chan<- error) {
@@ -65,14 +67,17 @@ func (p *persister) Restore() error {
 	}
 	defer file.Close()
 
-	metrics := []model.Metrics{}
+	var metrics []model.Metrics
 	decoder := json.NewDecoder(file)
 
 	if err = decoder.Decode(&metrics); err != nil {
 		return err
 	}
 
-	p.store.Restore(metrics)
+	if err = p.store.Restore(context.TODO(), metrics); err != nil {
+		return err
+	}
+	slog.Info("data successfully restored")
 	return nil
 }
 
@@ -83,7 +88,10 @@ func (p *persister) snapshot() error {
 	}
 	defer file.Close()
 
-	metrics := p.store.List()
+	metrics, err := p.store.List(context.TODO())
+	if err != nil {
+		return fmt.Errorf("snapshot: %w", err)
+	}
 
 	encoder := json.NewEncoder(file)
 	encoder.SetIndent("", "  ")
@@ -97,18 +105,18 @@ func intToSec(i int) time.Duration {
 	return time.Second * time.Duration(i)
 }
 
-func validateConfig(cfg *config.PersisterConfig) error {
+func validateConfig(cfg *config.Persister) error {
 	if cfg == nil {
-		return ErrCantBeNill
+		return ErrCantBeNil
 	}
 	if cfg.Restore == nil || cfg.StoreInterval == nil {
-		return ErrCantBeNill
+		return ErrCantBeNil
 	}
 	return nil
 
 }
 
-func New(cfg *config.PersisterConfig, store stateStore) (*persister, error) {
+func New(cfg *config.Persister, store StateStore) (*persister, error) {
 	if err := validateConfig(cfg); err != nil {
 		return nil, err
 	}
@@ -133,8 +141,9 @@ func PersisterMiddleware(p *persister) func(http.Handler) http.Handler {
 						"path", r.URL.Path,
 						"method", r.Method,
 					)
+				} else {
+					slog.Info("snapshot created")
 				}
-				slog.Info("snapshot created")
 			}
 		})
 	}

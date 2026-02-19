@@ -19,6 +19,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/go-chi/chi/v5/middleware"
@@ -67,8 +68,22 @@ const (
 // Resource management:
 //   - If output is "file" or "both", Init returns a non-nil [io.Closer] which must be closed
 //     by the caller during shutdown.
-func Init(cfg *config.LogConfig) (io.Closer, error) {
-	opts := &slog.HandlerOptions{}
+func Init(cfg *config.Log) (io.Closer, error) {
+	opts := &slog.HandlerOptions{
+		AddSource: true,
+		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+			switch a.Key {
+			case slog.TimeKey:
+				return slog.String(slog.TimeKey, a.Value.Time().UTC().Format(time.DateTime))
+			case slog.SourceKey:
+				source, ok := a.Value.Any().(*slog.Source)
+				if ok {
+					source.File = filepath.Base(source.File)
+				}
+			}
+			return a
+		},
+	}
 
 	// Validate and apply configured log level.
 	if err := setLevel(cfg.Level, opts); err != nil {

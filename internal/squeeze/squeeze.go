@@ -36,9 +36,7 @@ func (c *compressWriter) Write(p []byte) (int, error) {
 }
 
 func (c *compressWriter) WriteHeader(statusCode int) {
-	if statusCode < 300 {
-		c.w.Header().Set(contentEnc, gzipFormat)
-	}
+	c.w.Header().Set(contentEnc, gzipFormat)
 	c.w.WriteHeader(statusCode)
 }
 
@@ -63,7 +61,7 @@ func newCompressReader(r io.ReadCloser) (*compressReader, error) {
 	}, nil
 }
 
-func (c compressReader) Read(p []byte) (n int, err error) {
+func (c *compressReader) Read(p []byte) (n int, err error) {
 	return c.zr.Read(p)
 }
 

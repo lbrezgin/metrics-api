@@ -1,5 +1,3 @@
-// Package config provides structures and logic for agent and
-// server configuration.
 package config
 
 import (
@@ -8,40 +6,47 @@ import (
 	"github.com/caarlos0/env/v6"
 )
 
-type AgentConfig struct {
+type Agent struct {
 	Addr           string `env:"ADDRESS"`
 	ReportInterval int    `env:"REPORT_INTERVAL"`
 	PollInterval   int    `env:"POLL_INTERVAL"`
 }
 
-type ServerConfig struct {
+type Server struct {
 	Addr         string `env:"ADDRESS"`
-	LogCfg       *LogConfig
-	PersisterCfg *PersisterConfig
+	RepoCfg      *Repo
+	LogCfg       *Log
+	PersisterCfg *Persister
 }
 
-type LogConfig struct {
+type Repo struct {
+	DSN            string `env:"DATABASE_DSN"`
+	Driver         string `env:"DRIVER" envDefault:"pgx"`
+	MigrationsPath string `env:"MIGRATIONS_PATH" envDefault:"file://migrations"`
+}
+
+type Log struct {
 	Level  string `env:"LOG_LEVEL"`
 	Type   string `env:"LOG_TYPE"`
 	Output string `env:"LOG_OUTPUT"`
 }
 
-type PersisterConfig struct {
+type Persister struct {
 	StoreInterval   *int   `env:"STORE_INTERVAL"`
 	FileStoragePath string `env:"FILE_STORAGE_PATH"`
 	Restore         *bool  `env:"RESTORE"`
 }
 
-// Configs is a type constraint that limits [LoadConfig] to
+// Configs is a type constraint that limits [Load] to
 // supported configuration types.
 type Configs interface {
-	AgentConfig | ServerConfig
+	Agent | Server
 }
 
-// LoadConfig populates the provided config structure with values from
+// Load populates the provided config structure with values from
 // environmental variables. It accepts only types defined in the
 // Configs interface.
-func LoadConfig[T Configs](cfg *T) error {
+func Load[T Configs](cfg *T) error {
 	err := env.Parse(cfg)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)

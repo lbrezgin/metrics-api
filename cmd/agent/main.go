@@ -14,13 +14,13 @@ import (
 )
 
 func main() {
-	cfg := &config.AgentConfig{}
+	cfg := &config.Agent{}
 
 	if err := godotenv.Load(); err != nil {
 		log.Printf("env file wasn't load successfully: %v\n", err)
 	}
 
-	if err := config.LoadConfig(cfg); err != nil {
+	if err := config.Load(cfg); err != nil {
 		log.Fatal(err)
 	}
 
@@ -33,7 +33,7 @@ func main() {
 	}
 }
 
-func run(cfg *config.AgentConfig) error {
+func run(cfg *config.Agent) error {
 	runtimeStats := stats.NewRuntimeStats()
 
 	client := resty.New()

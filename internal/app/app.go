@@ -1,7 +1,3 @@
-// Package app wires HTTP router with configuration and runs the HTTP server.
-//
-// It exports a constructor New and a Start method, which starts the server and
-// blocks until it stops.
 package app
 
 import (
@@ -13,7 +9,14 @@ import (
 
 type app struct {
 	router http.Handler
-	cfg    *config.ServerConfig
+	cfg    *config.Server
+}
+
+func New(router http.Handler, cfg *config.Server) *app {
+	return &app{
+		router: router,
+		cfg:    cfg,
+	}
 }
 
 func (a *app) Start(stop <-chan struct{}) error {
@@ -37,6 +40,11 @@ func (a *app) Start(stop <-chan struct{}) error {
 			"file_storage_path", a.cfg.PersisterCfg.FileStoragePath,
 			"restore", *a.cfg.PersisterCfg.Restore,
 		),
+		slog.Group(
+			"repo",
+			"driver", a.cfg.RepoCfg.Driver,
+			"migrations_path", a.cfg.RepoCfg.MigrationsPath,
+		),
 	)
 
 	errCh := make(chan error, 1)
@@ -53,12 +61,5 @@ func (a *app) Start(stop <-chan struct{}) error {
 
 	case err := <-errCh:
 		return err
-	}
-}
-
-func New(router http.Handler, cfg *config.ServerConfig) *app {
-	return &app{
-		router: router,
-		cfg:    cfg,
 	}
 }

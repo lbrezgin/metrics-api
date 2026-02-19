@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -9,29 +10,24 @@ import (
 	"github.com/go-resty/resty/v2"
 	"github.com/lbrezgin/telemetry/internal/logger"
 	"github.com/lbrezgin/telemetry/internal/model"
-	"github.com/lbrezgin/telemetry/internal/repository"
+	"github.com/lbrezgin/telemetry/internal/repository/memstorage"
 	"github.com/lbrezgin/telemetry/internal/router"
 	"github.com/lbrezgin/telemetry/internal/service"
 	"github.com/stretchr/testify/assert"
 )
 
-// want describes response from server that should
-// be returned to the client.
 type want struct {
 	code        int
 	response    string
 	contentType string
 }
 
-// request contains data for request to the server.
 type request struct {
 	url         string
 	method      string
 	contentType string
 }
 
-// testCase describes full test data for the rest test case.
-// It contains want and request structs respectively.
 type testCase struct {
 	name    string
 	handler *metricsHandler
@@ -39,13 +35,19 @@ type testCase struct {
 	want    want
 }
 
+func Test_metricsHandler_Updates(t *testing.T) {}
+
+func Test_metricsHandler_UpdateFromBody(t *testing.T) {}
+
+func Test_metricsHandler_ShowFromBody(t *testing.T) {}
+
 func Test_metricsHandler_Update(t *testing.T) {
 	tests := []testCase{
 		{
 			name: "returns 400 if bad value given (gauge)",
 			handler: &metricsHandler{
 				svc: service.NewMetricsService(
-					repository.NewMemStorage(),
+					memstorage.New(),
 				),
 			},
 			request: request{
@@ -63,7 +65,7 @@ func Test_metricsHandler_Update(t *testing.T) {
 			name: "returns 400 if bad value given (counter)",
 			handler: &metricsHandler{
 				svc: service.NewMetricsService(
-					repository.NewMemStorage(),
+					memstorage.New(),
 				),
 			},
 			request: request{
@@ -81,7 +83,7 @@ func Test_metricsHandler_Update(t *testing.T) {
 			name: "returns 405 if request method isn't Post",
 			handler: &metricsHandler{
 				svc: service.NewMetricsService(
-					repository.NewMemStorage(),
+					memstorage.New(),
 				),
 			},
 			request: request{
@@ -99,7 +101,7 @@ func Test_metricsHandler_Update(t *testing.T) {
 			name: "returns 400 if metric type isn't supported",
 			handler: &metricsHandler{
 				svc: service.NewMetricsService(
-					repository.NewMemStorage(),
+					memstorage.New(),
 				),
 			},
 			request: request{
@@ -117,7 +119,7 @@ func Test_metricsHandler_Update(t *testing.T) {
 			name: "returns 200 if all is set up correct (metric of type gauge)",
 			handler: &metricsHandler{
 				svc: service.NewMetricsService(
-					repository.NewMemStorage(),
+					memstorage.New(),
 				),
 			},
 			request: request{
@@ -135,7 +137,7 @@ func Test_metricsHandler_Update(t *testing.T) {
 			name: "returns 200 if all is set up correct (metric of type counter)",
 			handler: &metricsHandler{
 				svc: service.NewMetricsService(
-					repository.NewMemStorage(),
+					memstorage.New(),
 				),
 			},
 			request: request{
@@ -179,7 +181,7 @@ func Test_metricsHandler_Show(t *testing.T) {
 			name: "returns 400 if metric type isn't supported ",
 			handler: &metricsHandler{
 				svc: service.NewMetricsService(
-					repository.NewMemStorage(),
+					memstorage.New(),
 				),
 			},
 			request: request{
@@ -197,7 +199,7 @@ func Test_metricsHandler_Show(t *testing.T) {
 			name: "returns 404 if metric not found",
 			handler: &metricsHandler{
 				svc: service.NewMetricsService(
-					repository.NewMemStorage(),
+					memstorage.New(),
 				),
 			},
 			request: request{
@@ -216,10 +218,10 @@ func Test_metricsHandler_Show(t *testing.T) {
 			handler: func() *metricsHandler {
 				h := &metricsHandler{
 					svc: service.NewMetricsService(
-						repository.NewMemStorage(),
+						memstorage.New(),
 					),
 				}
-				h.svc.Set("G1", model.Gauge, 12.12344)
+				h.svc.Set(context.Background(), "G1", model.Gauge, 12.12344)
 				return h
 			}(),
 			request: request{
@@ -238,10 +240,10 @@ func Test_metricsHandler_Show(t *testing.T) {
 			handler: func() *metricsHandler {
 				h := &metricsHandler{
 					svc: service.NewMetricsService(
-						repository.NewMemStorage(),
+						memstorage.New(),
 					),
 				}
-				h.svc.Increment("C1", model.Counter, 19)
+				h.svc.Increment(context.Background(), "C1", model.Counter, 19)
 				return h
 			}(),
 			request: request{
